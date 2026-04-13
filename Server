@@ -7,7 +7,7 @@ const app     = express();
 const PORT    = process.env.PORT || 3000;
 
 // -- change SECRET here to match your Lua script --
-const SECRET  = process.env.SECRET || "vinny2025";
+const SECRET  = process.env.SECRET || "119022GGdd";
 
 app.use(express.json());
 
