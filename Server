@@ -1,0 +1,122 @@
+// VinnyChat Server
+// Node.js + Express — drop this into Glitch, Render, or Railway
+// Everything runs in memory (last 100 messages, resets on restart)
+
+const express = require("express");
+const app     = express();
+const PORT    = process.env.PORT || 3000;
+
+// -- change SECRET here to match your Lua script --
+const SECRET  = process.env.SECRET || "vinny2025";
+
+app.use(express.json());
+
+// ── storage ───────────────────────────────────────────────────────
+let messages = [];     // last 100 messages
+let msgId    = 0;      // auto-increment id
+
+// track roughly how many clients are active
+// key = unique client token, value = last-seen timestamp
+let clients = {};
+
+// clean up stale clients every 30 seconds
+setInterval(() => {
+    const cutoff = Date.now() - 30_000;
+    for (const k in clients) {
+        if (clients[k] < cutoff) delete clients[k];
+    }
+}, 30_000);
+
+// ── auth middleware ───────────────────────────────────────────────
+function auth(req, res, next) {
+    if (req.headers["x-secret"] !== SECRET) {
+        return res.status(403).json({ error: "wrong key" });
+    }
+    // track this client as online using their token header
+    const token = req.headers["x-token"] || req.ip;
+    clients[token] = Date.now();
+    next();
+}
+
+// ── routes ────────────────────────────────────────────────────────
+
+// health check / root — also used by the self-pinger
+app.get("/", (req, res) => {
+    res.json({
+        status  : "ok",
+        msgs    : messages.length,
+        online  : Object.keys(clients).length,
+    });
+});
+
+// GET /messages?since=ID
+// returns all messages with id > since, plus online count
+app.get("/messages", auth, (req, res) => {
+    const since   = parseInt(req.query.since) || 0;
+    const newMsgs = messages.filter(m => m.id > since);
+    res.json({
+        messages : newMsgs,
+        online   : Object.keys(clients).length,
+        total    : msgId,
+    });
+});
+
+// POST /message
+// body: { user, display, text, time, game, job }
+app.post("/message", auth, (req, res) => {
+    const { user, display, text, time, game, job } = req.body || {};
+
+    if (!user || !text) {
+        return res.status(400).json({ error: "missing fields" });
+    }
+    if (typeof text !== "string" || text.length > 250) {
+        return res.status(400).json({ error: "too long" });
+    }
+    // basic sanity: strip control chars
+    const clean = text.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "").trim();
+    if (!clean) return res.status(400).json({ error: "empty" });
+
+    msgId++;
+    const msg = {
+        id      : msgId,
+        user    : String(user).slice(0, 50),
+        display : display ? String(display).slice(0, 50) : String(user).slice(0, 50),
+        text    : clean,
+        time    : time   || new Date().toISOString(),
+        game    : game   || "0",
+        job     : job    ? String(job).slice(0, 8) : "?",
+    };
+    messages.push(msg);
+
+    // keep only last 100
+    if (messages.length > 100) messages.shift();
+
+    res.json({ ok: true, id: msgId });
+});
+
+// DELETE /messages  (clear all — useful if spam)
+app.delete("/messages", auth, (req, res) => {
+    messages = [];
+    res.json({ ok: true });
+});
+
+// ── start ─────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+    console.log(`VinnyChat running on port ${PORT}`);
+});
+
+// ── self-pinger (keeps Render/Glitch free tier awake) ─────────────
+// pings our own / endpoint every 4 minutes so it never sleeps
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || "";
+if (RENDER_URL) {
+    const https = require("https");
+    const http  = require("http");
+    setInterval(() => {
+        const url = RENDER_URL.startsWith("https") ? https : http;
+        url.get(RENDER_URL, (r) => {
+            console.log(`[ping] ${RENDER_URL} → ${r.statusCode}`);
+        }).on("error", (e) => {
+            console.log("[ping] failed:", e.message);
+        });
+    }, 4 * 60 * 1000); // 4 minutes
+}
